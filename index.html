@@ -2637,7 +2637,7 @@ VIEWS.voce = () => {
   b += `<details class="fold card"><summary>Base científica do app</summary><div>${BASE_CIENTIFICA.map((x) => `<div class="stack" style="gap:2px"><b>${esc(x.t)}</b><span class="small">${esc(x.d)}</span><span class="faint" style="font-size:12.5px">${esc(x.f)}</span></div>`).join('')}<p class="faint">Atualizada em ${BASE_CIENTIFICA_DATA}. O Coach usa esta base em todas as respostas.</p></div></details>`;
   b += `<details class="fold card"><summary>Ajustes e dados</summary><div>
     <label class="check"><input type="checkbox" data-in="som" ${S.config.som === false ? '' : 'checked'}> Som ao terminar o descanso</label>
-    <div class="field"><label for="selMeso">Ciclos de treino</label><select id="selMeso" class="input" data-in="mesoSel">${[[0, 'Desligado'], [5, '5 semanas (4 + 1 leve)'], [6, '6 semanas (5 + 1 leve)']].map(([k, t]) => `<option value="${k}" ${(S.config.meso?.inicio ? S.config.meso.semanas : 0) === k ? 'selected' : ''}>${t}</option>`).join('')}</select><span class="faint small">Cada semana do ciclo vale uma volta na playlist, contada em treinos feitos: faltou um dia, ela espera.</span></div>
+    <div class="field"><label for="selMeso">Ciclos de treino</label><select id="selMeso" class="input" data-in="mesoSel">${[[0, 'Desligado'], [5, '5 semanas (4 + 1 leve)'], [6, '6 semanas (5 + 1 leve)']].map(([k, t]) => `<option value="${k}" ${(S.config.meso?.inicio ? S.config.meso.semanas : 0) === k ? 'selected' : ''}>${t}</option>`).join('')}</select><span class="faint small">A semana do ciclo vira na segunda se você fizer mais da metade dos treinos de musculação dela; com menos, ela se repete.</span></div>
     <label class="check"><input type="checkbox" data-in="autoVol" ${autoVolLigado() ? 'checked' : ''}> Ajustar as séries de cada músculo pelo que eu responder ao fim do treino</label>
     <div class="btnrow"><button class="btn sm" data-a="salvarBackup">Salvar backup</button><button class="btn sm" data-a="abrirRestaurar">Restaurar backup</button></div>
     <p class="faint small">${S.config.ultimoBackup ? `Último backup: ${fmtData(S.config.ultimoBackup, { day: '2-digit', month: 'short', year: 'numeric' })}.` : 'Nenhum backup salvo ainda.'} O backup guarda perfil, playlists, treinos, medidas e conversas; as fotos ficam de fora.</p>
@@ -3561,7 +3561,7 @@ function altPlato(exId) {
   return FAM[e.fam].ids.filter((x) => x !== exId && !sem.has(EX[x].eq) && !exc.has(x)).sort((a, b) => custo(a) - custo(b))[0] || null;
 }
 const deloadAtivo = () => (S.config.deloadAte || 0) > Date.now() || !!mesoAtual()?.leve;
-const fimDeload = () => ((S.config.deloadAte || 0) > Date.now() ? S.config.deloadAte : null); // a semana leve do ciclo acaba por treinos, não por data
+const fimDeload = () => ((S.config.deloadAte || 0) > Date.now() ? S.config.deloadAte : mesoAtual()?.fimSemana || Date.now());
 function estadoCiclo() {
   const ts = treinosOrd(); if (!ts.length) return null;
   const agora = Date.now();
@@ -3583,7 +3583,7 @@ function estadoCiclo() {
 }
 function blocoCiclo() {
   const c = estadoCiclo(); if (!c) return blocoMeso();
-  if (c.deload) { const m = mesoAtual(); return `<div class="callout"><b>${c.ate ? `Semana leve até ${fmtData(c.ate, { weekday: 'short', day: '2-digit', month: '2-digit' })}.` : `Semana leve do ciclo: treino ${m.treino} de ${m.porSemana}.`}</b> Séries reduzidas em cerca de 40% e cargas 10% menores, sempre sobrando 3 ou mais repetições. É assim que o corpo absorve o treino das últimas semanas.<div class="btnrow" style="margin-top:8px"><button class="btn sm" data-a="encerrarDeload">Encerrar semana leve</button></div></div>`; }
+  if (c.deload) return `<div class="callout"><b>${c.doCiclo ? `Semana leve do ciclo, até ${fmtData(c.ate - 864e5, { weekday: 'short', day: '2-digit', month: '2-digit' })}.` : `Semana leve até ${fmtData(c.ate, { weekday: 'short', day: '2-digit', month: '2-digit' })}.`}</b> Séries reduzidas em cerca de 40% e cargas 10% menores, sempre sobrando 3 ou mais repetições. É assim que o corpo absorve o treino das últimas semanas.<div class="btnrow" style="margin-top:8px"><button class="btn sm" data-a="encerrarDeload">Encerrar semana leve</button></div></div>`;
   if (!c.sugerir) return blocoMeso();
   return `<div class="card" style="border:1.5px solid var(--plate-15)"><div class="eyebrow" style="color:var(--warn)">Recuperação</div><div class="h3">Hora de uma semana leve</div>
     <p class="small muted">Sinais: ${esc(c.motivos.join('; '))}. Por 7 dias o app reduz as séries em cerca de 40% e as cargas em 10%. Depois você volta mais forte.</p>
@@ -3591,12 +3591,12 @@ function blocoCiclo() {
 }
 A.iniciarDeload = () => {
   S.config.deloadAte = Date.now() + 7 * 864e5;
-  // com ciclos, a semana leve antecipada fecha o ciclo: o próximo conta os treinos feitos depois dela
-  const m = mesoAtual(); if (m) S.config.meso = { ...S.config.meso, inicio: S.config.deloadAte, ciclo: cicloSeguinte(m) };
+  // com ciclos, a semana leve antecipada fecha o ciclo: o próximo começa na semana em que ela termina
+  const m = mesoAtual(); if (m) S.config.meso = { ...S.config.meso, inicio: inicioSemana(S.config.deloadAte), ciclo: cicloSeguinte(m) };
   gravar('config', null, S.config); render(); toast('Semana leve ativada por 7 dias'); };
 A.encerrarDeload = () => {
-  const m = mesoAtual(); if (m?.leve) S.config.meso = { ...S.config.meso, inicio: Date.now(), ciclo: m.ciclo + 1 };
-  else if (S.config.meso?.inicio > Date.now()) S.config.meso = { ...S.config.meso, inicio: Date.now() }; // semana leve antecipada encerrada antes: o ciclo seguinte já começa
+  const m = mesoAtual(); if (m?.leve) S.config.meso = { ...S.config.meso, inicio: inicioSemana(), ciclo: m.ciclo + 1 };
+  else if (S.config.meso?.inicio > Date.now()) S.config.meso = { ...S.config.meso, inicio: inicioSemana() }; // semana leve antecipada encerrada antes: o ciclo seguinte já começa
   S.config.deloadAte = Date.now(); S.config.cicloInicio = Date.now(); gravar('config', null, S.config); render(); toast('Semana leve encerrada. Novo ciclo começando.'); };
 A.adiarDeload = () => { S.config.deloadAdiadoAte = Date.now() + 7 * 864e5; gravar('config', null, S.config); render(); };
 
@@ -4145,36 +4145,43 @@ A.exportarMedidas = () => { if (!Object.keys(S.medidas).length) return toast('Ai
 
 // ───────── Ciclos de treino (mesociclos) ─────────
 // Ciclo de 5 ou 6 semanas: o esforço sobe semana a semana (menos repetições sobrando) e a última semana é leve.
-// A semana do ciclo conta treinos, não o calendário: ela vira a cada volta completa na playlist (um treino por dia de
-// musculação dela; caminhada e mobilidade não contam). Faltou um dia, a semana espera.
+// A semana do ciclo segue o calendário (vira na segunda), mas só conta se o aluno fez mais da metade dos treinos de
+// musculação da playlist (caminhada e mobilidade não contam); com menos, a mesma semana se repete. A semana leve
+// acaba no domingo de qualquer jeito: descanso não precisa ser "completado".
 // O volume sobe pelo ajuste automático de séries; no início de cada ciclo, as séries extras do ciclo anterior voltam ao plano base.
 const MESO_RR = { 5: [3, 2, 2, 1], 6: [3, 2.5, 2, 1.5, 1] };
 const rrTxt = (rr) => ({ 3: '3 ou mais', 2.5: '2 a 3', 2: '2', 1.5: '1 a 2', 1: '1' }[rr] || String(rr));
 const diasForca = (pl) => DIAS.filter((k) => pl?.dias?.[k]?.itens?.some((it) => !isCardio(it.ex))).length;
 const treinoDeForca = (t) => (t.itens || []).some((it) => !isCardio(it.ex) && seriesValidas(it).length);
 const treinosDoCiclo = (m) => Object.values(S.treinos).filter((t) => t.inicio >= m.inicio && treinoDeForca(t));
+const proxSemana = (w) => inicioSemana(w + 8 * 864e5);
 function mesoAtual() {
   const m = S.config.meso; if (!m?.inicio || !MESO_RR[m.semanas] || m.inicio > Date.now()) return null;
-  const feitos = treinosDoCiclo(m).length; const n = m.semanas; const porSemana = diasForca(playlistAtiva()) || 4;
-  const pos = feitos % (n * porSemana); const semana = Math.floor(pos / porSemana) + 1;
-  return { semanas: n, semana, ciclo: (m.ciclo || 1) + Math.floor(feitos / (n * porSemana)), leve: semana === n, rr: semana < n ? MESO_RR[n][semana - 1] : 3,
-    porSemana, treino: (pos % porSemana) + 1, faltamLeve: Math.max(0, (n - 1) * porSemana - pos), feitos: pos };
+  const n = m.semanas; const porSemana = diasForca(playlistAtiva()) || 4; const minimo = Math.floor(porSemana / 2) + 1;
+  const porSem = {}; for (const t of treinosDoCiclo(m)) { const w = inicioSemana(t.inicio); porSem[w] = (porSem[w] || 0) + 1; }
+  const atual = inicioSemana(); let semana = 1, ciclo = m.ciclo || 1, inicioCiclo = inicioSemana(m.inicio), repetida = null;
+  for (let w = inicioCiclo; w < atual; w = proxSemana(w)) {
+    const f = porSem[w] || 0; repetida = semana < n && f < minimo ? f : null;
+    if (repetida === null) { semana++; if (semana > n) { semana = 1; ciclo++; inicioCiclo = proxSemana(w); } }
+  }
+  const feitos = Object.entries(porSem).reduce((s, [w, f]) => s + (+w >= inicioCiclo ? f : 0), 0);
+  return { semanas: n, semana, ciclo, leve: semana === n, rr: semana < n ? MESO_RR[n][semana - 1] : 3, porSemana, minimo,
+    feitosSemana: porSem[atual] || 0, repetida, feitos, inicioCiclo, fimSemana: proxSemana(atual) };
 }
 // Número do próximo ciclo: um ciclo ainda sem treinos não é pulado.
 const cicloSeguinte = (a) => a.ciclo + (a.feitos ? 1 : 0);
-function ativarMeso(n) { S.config.meso = { inicio: new Date().setHours(0, 0, 0, 0), semanas: n, ciclo: 1, visto: 1 }; gravar('config', null, S.config); }
-// Chamado ao começar um treino: depois de uma pausa longa recomeça o ciclo; na virada de ciclo, devolve as séries extras
-// e o ciclo novo passa a contar os treinos a partir de agora.
+function ativarMeso(n) { S.config.meso = { inicio: inicioSemana(), semanas: n, ciclo: 1, visto: 1 }; gravar('config', null, S.config); }
+// Chamado ao começar um treino: depois de uma pausa longa recomeça o ciclo; na virada de ciclo, devolve as séries extras.
 function prepararCiclo() {
   const m = S.config.meso; const a = mesoAtual(); if (!a) return '';
   const ult = treinosDoCiclo(m).sort((x, y) => y.inicio - x.inicio)[0];
   if (ult && Date.now() - ult.inicio > 14 * 864e5) {
     const c = cicloSeguinte(a);
-    S.config.meso = { ...m, inicio: Date.now(), ciclo: c, visto: c }; gravar('config', null, S.config); reverterExtras(c);
+    S.config.meso = { ...m, inicio: inicioSemana(), ciclo: c, visto: c }; gravar('config', null, S.config); reverterExtras(c);
     return 'Depois da pausa, um ciclo novo começa: semana 1, com cargas mais leves.';
   }
   if ((m.visto || 1) >= a.ciclo) return '';
-  const n = reverterExtras(a.ciclo); S.config.meso = { ...m, inicio: Date.now(), ciclo: a.ciclo, visto: a.ciclo }; gravar('config', null, S.config);
+  const n = reverterExtras(a.ciclo); S.config.meso = { ...m, inicio: a.inicioCiclo, ciclo: a.ciclo, visto: a.ciclo }; gravar('config', null, S.config);
   return `Ciclo ${a.ciclo} começou${n ? `: ${n} série${n > 1 ? 's' : ''} extra${n > 1 ? 's' : ''} do ciclo anterior ${n > 1 ? 'voltaram' : 'voltou'} ao plano base` : ''}.`;
 }
 // Usa o saldo de cada exercício (um +1 desfeito depois por um −1 não tira nada); as reduções continuam valendo.
@@ -4200,14 +4207,17 @@ function blocoMeso() {
   const m = mesoAtual();
   if (m && !m.leve) {
     const seg = Array.from({ length: m.semanas }, (_, k) => `<i class="${k + 1 < m.semana ? 'feito' : k + 1 === m.semana ? 'agora' : ''} ${k + 1 === m.semanas ? 'leve' : ''}">${k + 1 === m.semanas ? 'L' : k + 1}</i>`).join('');
-    return `<div class="card tight meso"><div class="row between"><span class="lbl">Ciclo ${m.ciclo} · semana ${m.semana} de ${m.semanas}</span><span class="faint small">Treino ${m.treino} de ${m.porSemana}</span></div><div class="mesobar">${seg}</div>
+    const prox = m.semana + 1 === m.semanas ? 'a semana leve' : `a semana ${m.semana + 1}`; const falta = m.minimo - m.feitosSemana;
+    const rep = m.repetida === null ? '' : `Semana repetida: na anterior ${m.repetida === 0 ? 'não houve treino' : m.repetida === 1 ? 'houve só 1 treino' : `houve só ${m.repetida} treinos`}. `;
+    return `<div class="card tight meso"><div class="row between"><span class="lbl">Ciclo ${m.ciclo} · semana ${m.semana} de ${m.semanas}</span><span class="faint small">${m.feitosSemana} de ${m.porSemana} treinos</span></div><div class="mesobar">${seg}</div>
       <p class="small">Esforço desta semana: pare com <b>${rrTxt(m.rr)} repetiç${m.rr === 1 ? 'ão' : 'ões'} sobrando</b>. As cargas de cada série já seguem isso.</p>
-      <p class="faint small">A semana do ciclo vira a cada ${m.porSemana} treinos feitos, não pelo calendário. Semana leve daqui a ${m.faltamLeve} treino${m.faltamLeve > 1 ? 's' : ''}.</p></div>`;
+      <p class="faint small">${rep}${falta > 0 ? `Com pelo menos ${m.minimo} treinos até domingo (falta${falta > 1 ? 'm' : ''} ${falta}), na segunda vem ${prox}; com menos, esta semana se repete.` : `Esta semana já conta: na segunda vem ${prox}.`}</p></div>`;
   }
   const m0 = S.config.meso;
   if (!m && m0?.inicio > Date.now()) {
+    const ps = diasForca(playlistAtiva()) || 4;
     return `<div class="card tight meso"><div class="row between"><span class="lbl">Ciclo ${m0.ciclo || 1} · ${m0.semanas} semanas</span><span class="faint small">Começa ${fmtData(m0.inicio, { weekday: 'long', day: '2-digit', month: '2-digit' })}</span></div>
-      <p class="small">Até lá, aprenda os movimentos e pare cada série com <b>${rrTxt(rrAlvo())} repetições sobrando</b>. Cada semana do ciclo vale ${diasForca(playlistAtiva()) || 4} treinos feitos.</p></div>`;
+      <p class="small">Até lá, aprenda os movimentos e pare cada série com <b>${rrTxt(rrAlvo())} repetições sobrando</b>. Cada semana do ciclo vira na segunda, se você fizer pelo menos ${Math.floor(ps / 2) + 1} dos ${ps} treinos dela.</p></div>`;
   }
   if (S.config.meso || S.config.mesoOferta === 'nao' || !playlistAtiva()) return '';
   return `<div class="card"><div class="eyebrow">Novo</div><div class="h3">Treine em ciclos</div><p class="small muted">Em ciclos de 5 semanas o esforço sobe aos poucos e a 5ª semana é leve, para o corpo absorver o treino. Junto com o ajuste de séries por músculo, é o jeito mais seguro de continuar evoluindo.</p>
@@ -4225,7 +4235,7 @@ function mesoTexto() {
   const m = mesoAtual(); const m0 = S.config.meso;
   if (!m && m0?.inicio > Date.now()) return `Ciclo ${m0.ciclo || 1} de ${m0.semanas} semanas começa em ${fmtData(m0.inicio)}; até lá, meta de ${rrTxt(rrAlvo())} repetições na reserva.`;
   if (!m) return S.config.meso?.inicio ? 'Ciclos ativos; o próximo ciclo começa em breve.' : 'Ciclos desligados (o aluno pode ativar na tela Hoje ou em Você > Ajustes).';
-  return `Ciclo ${m.ciclo}, semana ${m.semana} de ${m.semanas} (treino ${m.treino} de ${m.porSemana} desta semana)${m.leve ? ' (SEMANA LEVE)' : `: meta de ${rrTxt(m.rr)} repetições na reserva`}. Cada semana do ciclo vale ${m.porSemana} treinos feitos, não o calendário; a última semana de cada ciclo é leve.`;
+  return `Ciclo ${m.ciclo}, semana ${m.semana} de ${m.semanas}${m.leve ? ' (SEMANA LEVE)' : `: meta de ${rrTxt(m.rr)} repetições na reserva`}; ${m.feitosSemana} de ${m.porSemana} treinos feitos nesta semana. A semana do ciclo vira na segunda se o aluno fizer pelo menos ${m.minimo} treinos; com menos, ela se repete. A última semana de cada ciclo é leve.`;
 }
 
 // ───────── Ajuste automático de séries por músculo ─────────
