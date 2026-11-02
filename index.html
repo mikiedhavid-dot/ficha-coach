@@ -562,6 +562,11 @@ details.fold > div { padding-top: 10px; display: flex; flex-direction: column; g
   .thumb { width: 76px; }
 }
 
+/* App offline (instalado): o Coach fica no app do claude.ai */
+.offline-app [data-a="tab"][data-v="coach"], .offline-app [data-a="irCoach"], .offline-app [data-a="bvCoach"],
+.offline-app [data-a="salvarTreino"][data-v="coach"], .offline-app .so-coach { display: none !important; }
+.sync-colar { font-size: 14px; padding: 10px 12px; }
+
 </style>
 
 </head>
@@ -1724,17 +1729,27 @@ function parseFaixa(reps) {
 // ───────── Armazenamento (nuvem do claude.ai com reserva no aparelho) ─────────
 // App instalado na tela de início (fora do claude.ai): tudo fica no celular e funciona sem internet.
 const INSTALADO = !!globalThis.FICHA_INSTALADO;
-const S = { perfil: {}, config: {}, sessao: null, playlists: {}, treinos: {}, conversas: {}, medidas: {}, exercicios: {}, modo: 'local', pronto: false };
+const S = { perfil: {}, config: {}, sessao: null, playlists: {}, treinos: {}, conversas: {}, medidas: {}, exercicios: {}, apagados: {}, modo: 'local', pronto: false };
 let db = null;
 const LS = 'ficha-coach-v1';
 const DOCS = { perfil: 'app/perfil', config: 'app/config', sessao: 'app/sessao' };
 const COLS = ['playlists', 'treinos', 'conversas', 'medidas', 'exercicios'];
-const CHAVES_LS = ['perfil', 'config', 'sessao', 'playlists', 'treinos', 'conversas', 'medidas', 'exercicios'];
+const CHAVES_LS = ['perfil', 'config', 'sessao', 'playlists', 'treinos', 'conversas', 'medidas', 'exercicios', 'apagados'];
 // Pendências de envio (caminho → 'set' | 'del'). Ficam guardadas no aparelho até a nuvem confirmar,
 // para que um treino salvo sem internet nunca se perca.
 let pend = {};
 function lsLoad() {
   try { const o = JSON.parse(localStorage.getItem(LS) || 'null'); if (o) { for (const k of CHAVES_LS) if (o[k]) S[k] = o[k]; pend = o.pend || {}; } } catch (e) {}
+  cfgVista = fotoCfg(S.config);
+}
+// App instalado: hora da última mudança de cada campo da config (_ts). Na sincronização, cada campo fica com a
+// mudança mais recente entre o celular e o GitHub, sem que um ajuste qualquer apague, por exemplo, a troca de playlist.
+let cfgVista = {};
+const fotoCfg = (c) => Object.fromEntries(Object.entries(c || {}).filter(([k]) => k !== '_ts' && k !== 'rev').map(([k, v]) => [k, JSON.stringify(v)]));
+function carimbarConfig(c) {
+  const agora = Date.now(); const ts = { ...(c._ts || {}) };
+  for (const [k, v] of Object.entries(fotoCfg(c))) if (v !== cfgVista[k]) ts[k] = agora;
+  c._ts = ts; cfgVista = fotoCfg(c);
 }
 let lsTimer;
 function lsSave() {
@@ -1769,10 +1784,17 @@ function enviarDoc(path) {
 function enviarPendencias() { if (!db) return; for (const p of Object.keys(pend)) if (!adiados[p]) enviarDoc(p); }
 const adiados = {};
 // Grava um documento (ou remove com null): na hora no aparelho, e na nuvem assim que possível.
-function gravar(chave, id, dados, atraso = 0) {
+// manterRev: dados que vieram do outro app (sincronização) guardam a versão de lá, para não voltarem como novidade.
+function gravar(chave, id, dados, atraso = 0, manterRev = false) {
   const path = id ? `${chave}/${id}` : DOCS[chave];
-  if (dados) dados.rev = Date.now();
+  if (dados && !(manterRev && dados.rev)) dados.rev = Date.now();
   if (id) { if (dados) S[chave][id] = dados; else delete S[chave][id]; } else S[chave] = dados;
+  if (INSTALADO) {
+    if (id && !dados) S.apagados[path] = Date.now(); // apagar também vale para a cópia no GitHub
+    if (chave === 'config' && dados) { if (manterRev) cfgVista = fotoCfg(dados); else carimbarConfig(dados); }
+    lsSave(); if (chave !== 'sessao' && chave !== 'conversas') agendarNuvem();
+    return;
+  }
   pend[path] = dados ? 'set' : 'del';
   lsSave();
   if (!db) return;
@@ -2108,7 +2130,7 @@ function agendarRender() { if (renderPend) return; renderPend = true; setTimeout
 const focoEmCampo = () => { const a = document.activeElement; return a && a !== document.body && a.matches('input, textarea, select') && $('#main').contains(a); };
 
 const UI = { tab: 'hoje', diaSel: null, editPl: null, editDia: null, busca: '', grupo: '', eq: '', soMinha: false, emTreino: false, convId: null, sheet: null, confirmar: null, verTodas: false };
-try { const t = localStorage.getItem(LS + '-tab'); if (t) UI.tab = t; } catch (e) {}
+try { const t = localStorage.getItem(LS + '-tab'); if (t && !(INSTALADO && t === 'coach')) UI.tab = t; } catch (e) {}
 
 function render() {
   sincCustom();
@@ -2146,7 +2168,7 @@ for (const tipo of ['input', 'change']) document.addEventListener(tipo, (ev) => 
   const fn = IN[el.dataset.in]; if (fn) fn(el, ev, tipo);
 });
 
-A.tab = (el) => { UI.tab = el.dataset.v; UI.emTreino = false; UI.editPl = null; try { localStorage.setItem(LS + '-tab', UI.tab); } catch (e) {} render.forcar = true; render(); rolarTopo(); };
+A.tab = (el) => { if (INSTALADO && el.dataset.v === 'coach') return toast(SEM_COACH_OFFLINE); UI.tab = el.dataset.v; UI.emTreino = false; UI.editPl = null; try { localStorage.setItem(LS + '-tab', UI.tab); } catch (e) {} render.forcar = true; render(); rolarTopo(); };
 A.closeSheet = () => fecharSheet();
 A.desfazer = () => { const f = toast.desfazer; toast.desfazer = null; $('#toast').hidden = true; if (f) f(); };
 A.animPause = (el) => { const a = el.closest('[data-anim]'); const p = a.classList.toggle('paused'); el.textContent = p ? 'Trocar posição' : 'Pausar'; if (p) a.style.setProperty('--fr', 0); };
@@ -2416,7 +2438,7 @@ VIEWS.hoje = () => {
   if (precisaBoasVindas()) return viewBoasVindas();
   const pl = playlistAtiva(); const hk = hojeKey(); const dia = UI.diaSel || hk;
   const nome = primeiroNome();
-  let b = blocoInstalado();
+  let b = blocoInstalado() + blocoNuvem('hoje');
   if (S.sessao) {
     b += `<div class="card hero score"><div class="row between"><div class="grow"><div class="eyebrow">Treino em andamento</div><div class="display" style="font-size:26px">${esc(S.sessao.titulo)}</div></div><div class="wk-time" id="wkTime2">${fmtClock(Date.now() - S.sessao.inicio)}</div></div><button class="btn go big block" data-a="abrirTreino">Continuar treino ${ICON.play}</button></div>`;
   }
@@ -2617,9 +2639,9 @@ VIEWS.voce = () => {
     <label class="check"><input type="checkbox" data-in="autoVol" ${autoVolLigado() ? 'checked' : ''}> Ajustar as séries de cada músculo pelo que eu responder ao fim do treino</label>
     <div class="btnrow"><button class="btn sm" data-a="salvarBackup">Salvar backup</button><button class="btn sm" data-a="abrirRestaurar">Restaurar backup</button></div>
     <p class="faint small">${S.config.ultimoBackup ? `Último backup: ${fmtData(S.config.ultimoBackup, { day: '2-digit', month: 'short', year: 'numeric' })}.` : 'Nenhum backup salvo ainda.'} O backup guarda perfil, playlists, treinos, medidas e conversas; as fotos ficam de fora.</p>
-    <p class="small muted">${S.modo === 'nuvem' ? 'Seus dados ficam na sua área privada da nuvem: só você vê, em qualquer aparelho em que abrir este app com a sua conta.' : S.motivoLocal === 'instalado' ? 'App instalado: seus dados ficam neste celular e tudo funciona sem internet, menos o Coach. Salve um backup de vez em quando: se o app for apagado, os dados vão junto.' : S.motivoLocal === 'sem-permissao' ? 'Você abriu o app por um link compartilhado: seus treinos ficam salvos neste aparelho, só para você. Para usar a nuvem em vários aparelhos, peça a quem compartilhou para te convidar como editor.' : 'Seus dados estão salvos só neste aparelho. Abra pelo link do claude.ai com a sua conta para salvar na nuvem.'}</p>
+    <p class="small muted">${S.modo === 'nuvem' ? 'Seus dados ficam na sua área privada da nuvem: só você vê, em qualquer aparelho em que abrir este app com a sua conta.' : S.motivoLocal === 'instalado' ? 'App offline: seus dados ficam neste celular e tudo funciona sem internet. O Coach fica no app do claude.ai. Salve um backup de vez em quando: se o app for apagado, os dados vão junto.' : S.motivoLocal === 'sem-permissao' ? 'Você abriu o app por um link compartilhado: seus treinos ficam salvos neste aparelho, só para você. Para usar a nuvem em vários aparelhos, peça a quem compartilhou para te convidar como editor.' : 'Seus dados estão salvos só neste aparelho. Abra pelo link do claude.ai com a sua conta para salvar na nuvem.'}</p>
     ${S.modo === 'nuvem' ? `<div class="row between small"><span>${nPend() ? `${nPend()} alteraç${nPend() === 1 ? 'ão' : 'ões'} aguardando envio` : 'Tudo sincronizado com a nuvem'}</span>${nPend() ? '<button class="btn sm" data-a="sincronizar">Enviar agora</button>' : ''}</div>` : ''}
-    ${INSTALADO ? `<div class="row between small"><span>${lerChave() ? `Coach: chave da API salva (…${esc(lerChave().slice(-4))})` : 'Coach: sem chave da API'}</span><span class="btnrow">${lerChave() ? '<button class="btn sm" data-a="removerChave">Remover chave</button>' : ''}<button class="btn sm" data-a="irChave">${lerChave() ? 'Trocar' : 'Colocar chave'}</button></span></div>` : blocoLevarDados()}
+    ${blocoNuvem('ajustes')}
     <div class="btnrow"><button class="btn sm" data-a="exportarTreinos">Exportar treinos (planilha)</button><button class="btn sm" data-a="exportarMedidas">Exportar medidas</button></div>
     <p class="faint">Fotos dos exercícios: Free Exercise DB (domínio público).</p>
     ${UI.confirmar === 'apagarTudo' ? `<div class="callout bad"><b>Apagar tudo?</b> Playlists, histórico, conversas e perfil serão removidos para sempre.<div class="btnrow" style="margin-top:10px"><button class="btn danger" data-a="apagarTudo">Apagar definitivamente</button><button class="btn" data-a="cancelarConfirma">Cancelar</button></div></div>` : '<button class="btn danger sm" data-a="pedirApagarTudo">Apagar todos os meus dados</button>'}
@@ -2677,7 +2699,7 @@ function sheetPicker() {
 A.selDia = (el) => { UI.diaSel = el.dataset.v; render(); };
 IN.setAtiva = (el) => { S.config.playlistAtiva = el.value; gravar('config', null, S.config); UI.diaSel = null; render.forcar = true; render(); };
 A.verEx = (el) => { const id = el.dataset.id; if (!EX[id]) return; UI.confirmar = null; abrirSheet(() => sheetEx(id)); $('#sheetBody').scrollTop = 0; };
-A.irCoach = (el) => { UI.tab = 'coach'; UI.emTreino = false; UI.prefill = el.dataset.v || ''; fecharSheet(); render.forcar = true; render(); setTimeout(() => $('#coachIn')?.focus(), 50); };
+A.irCoach = (el) => { if (INSTALADO) return toast(SEM_COACH_OFFLINE); UI.tab = 'coach'; UI.emTreino = false; UI.prefill = el.dataset.v || ''; fecharSheet(); render.forcar = true; render(); setTimeout(() => $('#coachIn')?.focus(), 50); };
 A.perguntarEx = (el) => { A.irCoach({ dataset: { v: `Sobre [[${el.dataset.id}]]: ` } }); };
 A.abrirPerfil = () => abrirSheet(sheetPerfil);
 A.salvarPerfil = () => {
@@ -4496,10 +4518,10 @@ function viewBoasVindas() {
   const pular = '<button class="linkish" data-a="bvPular">Pular e explorar sozinho</button>';
   if (u.passo === 1) return { top: topo('Bem-vindo', 'Ficha Coach'), body: `${pontos}
     <div class="card hero"><div class="display" style="font-size:30px">Seu treino na academia, do jeito certo</div>
-      <ul class="bvlista"><li>Uma playlist com os treinos da semana, e cada exercício com foto e passo a passo.</li><li>O app calcula a carga de cada série e ajusta conforme você evolui.</li><li>Um Coach com inteligência artificial para montar e revisar seu treino.</li></ul>
+      <ul class="bvlista"><li>Uma playlist com os treinos da semana, e cada exercício com foto e passo a passo.</li><li>O app calcula a carga de cada série e ajusta conforme você evolui.</li><li>${INSTALADO ? 'Quer mudar algo no treino? Peça ao Claude: a mudança chega aqui sozinha, na próxima vez que houver internet.' : 'Um Coach com inteligência artificial para montar e revisar seu treino.'}</li></ul>
       <button class="btn go big block" data-a="bvIr" data-v="2">Começar · 1 minuto ${ICON.play}</button></div>
     <p class="faint small">${S.modo === 'nuvem' ? 'Seus dados ficam na sua conta: só você vê.' : 'Seus dados ficam salvos neste celular, só para você. Em Você › Ajustes dá para salvar um backup.'}</p>
-    ${INSTALADO ? '<button class="btn block" data-a="abrirRestaurar">Já uso o app no claude.ai: trazer meus dados</button>' : ''}
+    ${INSTALADO ? '<button class="btn block" data-a="abrirNuvem">Já tenho meus dados: conectar ao meu GitHub</button>' : ''}
     <div style="text-align:center">${pular}</div>` };
   const chips = (k, obj, tam = '') => `<div class="chips">${Object.entries(obj).map(([v, t]) => `<button class="chip ${tam} ${String(p[k]) === String(v) ? 'on' : ''}" data-a="bvSet" data-k="${k}" data-v="${v}">${t}</button>`).join('')}</div>`;
   if (u.passo === 2) {
@@ -4527,7 +4549,7 @@ function viewBoasVindas() {
       <p class="small" style="color:var(--hero-ink-2)">${esc(r.porque)}</p>
       <div class="chips">${DIAS.filter((k) => m.dias[k]).map((k, n) => `<span class="tag">${r.seq ? 'Treino ' + String.fromCharCode(65 + n) : DIAS_CURTO[k]}</span>`).join('')}</div>
       <button class="btn go big block" data-a="bvUsar" data-id="${m.id}">Usar esta playlist ${ICON.play}</button></div>
-    <div class="card"><div class="h3">Prefere algo sob medida?</div><p class="small muted">O Coach monta a playlist com as suas respostas e pode ajustar exercícios, dias e tempo.</p><button class="btn" data-a="bvCoach">${ICON.chat} Montar com o Coach</button></div>
+    <div class="card so-coach"><div class="h3">Prefere algo sob medida?</div><p class="small muted">O Coach monta a playlist com as suas respostas e pode ajustar exercícios, dias e tempo.</p><button class="btn" data-a="bvCoach">${ICON.chat} Montar com o Coach</button></div>
     <div class="row between"><button class="linkish" data-a="bvIr" data-v="2">Voltar</button><button class="linkish" data-a="bvModelos">Ver todos os modelos</button></div>` };
 }
 A.bvSet = (el) => { const p = UI.bv.p; const k = el.dataset.k; p[k] = String(p[k]) === el.dataset.v ? '' : el.dataset.v; render(); };
@@ -4550,18 +4572,23 @@ A.bvCoach = () => { fimBoasVindas(); A.irCoach({ dataset: { v: 'Acabei de preenc
 A.bvModelos = () => { fimBoasVindas(); A.tab({ dataset: { v: 'playlists' } }); };
 A.bvPular = () => { if (UI.bv?.passo >= 2 && UI.bv.p.objetivo) salvarPerfilBv(); fimBoasVindas(); render.forcar = true; render(); };
 
-// ───────── App instalado na tela de início (funciona sem internet) ─────────
-// É o mesmo app do claude.ai, aberto pelo ícone do iPhone. Fora do claude.ai não há nuvem, arquivos nem Claude da conta:
-// os dados ficam no celular, os arquivos saem pelo Compartilhar do iPhone, as fotos ficam no aparelho (IndexedDB)
-// e o Coach fala com a API da Anthropic usando a chave do próprio aluno, só quando há internet.
+// ───────── App instalado na tela de início (o app principal: funciona com e sem internet) ─────────
+// Mesmo código do app do claude.ai, aberto pelo ícone do iPhone. Sem chat: mudanças no treino o aluno pede ao Claude
+// fora do app, e o Claude altera a cópia dos dados no repositório privado do GitHub do aluno (sincronização abaixo).
+// Arquivos saem pelo Compartilhar do iPhone e as fotos ficam no aparelho (IndexedDB).
 const URL_APP = 'https://mikiedhavid-dot.github.io/ficha-coach/';
+const SEM_COACH_OFFLINE = 'O chat não fica no app: peça as mudanças ao Claude e elas chegam aqui na próxima sincronização.';
 const noSafariDoIphone = () => /iPhone|iPad|iPod/.test(navigator.userAgent || '') && navigator.standalone === false;
+if (INSTALADO) document.body?.classList.add('offline-app');
 
 // Atualização: o service worker guarda o app no celular; versão nova só entra quando o aluno toca em Atualizar
 let swNovo = null;
 function iniciarInstalado() {
   try { navigator.storage?.persist?.(); } catch (e) {}
-  window.addEventListener('online', agendarRender); window.addEventListener('offline', agendarRender);
+  window.addEventListener('online', () => { agendarRender(); sincronizar(); });
+  window.addEventListener('offline', agendarRender);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - (S.nuvem?.em || 0) > 60000) sincronizar(); });
+  setTimeout(() => sincronizar(), 800);
   const sw = navigator.serviceWorker; if (!sw) return;
   sw.register('sw.js').then((reg) => {
     const marcar = (w) => { if (w && sw.controller) { swNovo = w; agendarRender(); } };
@@ -4574,7 +4601,7 @@ function iniciarInstalado() {
 }
 A.atualizarApp = () => { if (S.sessao) return toast('Termine o treino antes de atualizar'); swNovo?.postMessage('pular'); };
 function blocoInstalado() {
-  if (!INSTALADO) return '';
+  if (!INSTALADO) return `<div class="callout small">Este app agora mora no app instalado, que funciona com e sem internet: abra <a href="${URL_APP}" target="_blank" rel="noopener">${URL_APP.replace('https://', '')}</a> no Safari do iPhone e toque em Compartilhar › Adicionar à Tela de Início. Este aqui não recebe mais atualizações.</div>`;
   if (swNovo && !S.sessao) return `<div class="callout row between"><span class="small">Nova versão do app pronta.</span><button class="btn sm primary" data-a="atualizarApp">Atualizar</button></div>`;
   if (noSafariDoIphone()) return `<div class="card"><div class="h3">Instale no iPhone</div><p class="small">Toque em Compartilhar e depois em <b>Adicionar à Tela de Início</b>. Pelo ícone, o app abre mesmo sem internet.</p><p class="faint small">O Safari e o app instalado guardam dados separados: use sempre pelo ícone.</p></div>`;
   return '';
@@ -4607,151 +4634,158 @@ function fotosLocal() {
   };
 }
 
-// ───────── Coach pela API da Anthropic (chave do aluno) ─────────
-// A chave fica só neste celular, fora dos dados do app e do backup.
-const CHAVE_API = 'ficha-coach-chave-api';
-const lerChave = () => { try { return localStorage.getItem(CHAVE_API) || ''; } catch (e) { return ''; } };
-// Preços em US$ por milhão de tokens (tabela da Anthropic, outubro de 2026). Só a família Haiku não tem plano B em recusa.
-const MODELOS_API = [
-  { id: 'claude-opus-5-5', nome: 'Opus 5.5', nota: 'o mais completo', in: 4, out: 20, fallback: true },
-  { id: 'claude-sonnet-5-5', nome: 'Sonnet 5.5', nota: 'equilibrado', in: 2, out: 10, fallback: true },
-  { id: 'claude-haiku-5-5', nome: 'Haiku 5.5', nota: 'o mais barato', in: 0.1, out: 0.5, fallback: false }
-];
-const modeloApi = () => MODELOS_API.find((m) => m.id === S.config.modeloApi) || MODELOS_API[0];
-const custoUso = (m, u) => (((u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) * 1.25 + (u.cache_read_input_tokens || 0) * 0.1) * m.in + (u.output_tokens || 0) * m.out) / 1e6;
-function somarGasto(usd) {
-  const mes = chaveData(Date.now()).slice(0, 7); const g = S.config.gastoApi?.mes === mes ? S.config.gastoApi : { mes, usd: 0, msgs: 0 };
-  S.config.gastoApi = { mes, usd: g.usd + usd, msgs: g.msgs + 1 }; gravar('config', null, S.config);
+// ───────── Sincronização com o repositório privado do aluno no GitHub ─────────
+// Um arquivo dados.json guarda perfil, config, playlists, treinos, medidas e exercícios. O app lê, junta com o que
+// tem no celular e grava de volta (o sha do GitHub impede que uma gravação apague a outra). Funciona sem internet:
+// as mudanças ficam no celular e sobem na próxima vez que houver conexão. O treino em andamento não sobe.
+const COLS_NUVEM = ['playlists', 'treinos', 'medidas', 'exercicios'];
+const ARQ_NUVEM = 'dados.json';
+const REPO_PADRAO = 'mikiedhavid-dot/ficha-coach-dados';
+const CHAVE_NUVEM = LS + '-github';
+const lerNuvemCfg = () => { try { const o = JSON.parse(localStorage.getItem(CHAVE_NUVEM) || 'null'); return o?.token && o?.repo ? o : null; } catch (e) { return null; } };
+const ANO_MS = 365 * 864e5;
+// Junta dois conjuntos de dados: cada documento fica com a versão mais nova (rev); apagar vence versões mais antigas;
+// na config, cada campo fica com a mudança mais recente (_ts), e as listas de conquistas e treinos pulados se somam.
+function juntarDados(a, b) {
+  const r = { apagados: {} };
+  for (const fonte of [a.apagados, b.apagados]) for (const [p, t] of Object.entries(fonte || {})) if (t > (r.apagados[p] || 0) && Date.now() - t < ANO_MS) r.apagados[p] = t;
+  for (const k of COLS_NUVEM) {
+    r[k] = {};
+    for (const id of new Set([...Object.keys(a[k] || {}), ...Object.keys(b[k] || {})])) {
+      const x = a[k]?.[id], y = b[k]?.[id]; const v = !x ? y : !y ? x : (y.rev || 0) > (x.rev || 0) ? y : x;
+      if (v && (r.apagados[`${k}/${id}`] || 0) < (v.rev || 0)) r[k][id] = v;
+    }
+  }
+  r.perfil = ((b.perfil?.rev || 0) > (a.perfil?.rev || 0) ? b.perfil : a.perfil) || {};
+  const ca = a.config || {}, cb = b.config || {}, ta = ca._ts || {}, tb = cb._ts || {}; const cfg = {}, ts = {};
+  for (const k of new Set([...Object.keys(ca), ...Object.keys(cb)])) {
+    if (k === '_ts' || k === 'rev') continue;
+    const deB = !(k in ca) || (k in cb && (tb[k] || 0) > (ta[k] || 0));
+    cfg[k] = deB ? cb[k] : ca[k]; if ((deB ? tb[k] : ta[k]) != null) ts[k] = deB ? tb[k] : ta[k];
+  }
+  for (const k of ['conquistas', 'ignorados']) if (Array.isArray(ca[k]) && Array.isArray(cb[k])) cfg[k] = [...new Set([...ca[k], ...cb[k]])];
+  cfg._ts = ts; cfg.rev = Math.max(ca.rev || 0, cb.rev || 0);
+  r.config = cfg;
+  return r;
 }
-const fmtUsd = (v) => 'US$ ' + (v < 0.01 && v > 0 ? v.toFixed(4) : v.toFixed(2)).replace('.', ',');
-let sdkPromise = null;
-function carregarSdk() {
-  if (window.Anthropic) return Promise.resolve(window.Anthropic);
-  if (!sdkPromise) sdkPromise = new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'anthropic-sdk.js'; s.onload = () => ok(window.Anthropic); s.onerror = () => { sdkPromise = null; no(new Error('SDK')); }; document.head.appendChild(s); });
-  return sdkPromise;
+const dadosLocais = () => ({ perfil: S.perfil, config: S.config, apagados: S.apagados, ...Object.fromEntries(COLS_NUVEM.map((k) => [k, S[k]])) });
+// texto estável (chaves em ordem) para comparar dois conjuntos sem falso "mudou"
+const estavel = (v) => (Array.isArray(v) ? `[${v.map(estavel).join(',')}]` : v && typeof v === 'object' ? `{${Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + estavel(v[k])).join(',')}}` : JSON.stringify(v ?? null));
+function aplicarNoAparelho(j) {
+  let n = 0;
+  for (const k of COLS_NUVEM) {
+    for (const [id, v] of Object.entries(j[k])) if ((S[k][id]?.rev || 0) !== (v.rev || 0)) { gravar(k, id, clone(v), 0, true); n++; }
+    for (const id of Object.keys(S[k])) if (!j[k][id]) { gravar(k, id, null); n++; }
+  }
+  if ((S.perfil?.rev || 0) !== (j.perfil?.rev || 0) && j.perfil?.rev) gravar('perfil', null, clone(j.perfil), 0, true);
+  const semRev = (c) => { const o = { ...c }; delete o.rev; return estavel(o); };
+  if (semRev(S.config) !== semRev(j.config)) gravar('config', null, clone(j.config), 0, true);
+  S.apagados = { ...j.apagados }; lsSave();
+  return n;
 }
-function erroApi(e, Anthropic, text) {
-  const r = (code, message = '') => ({ code, message, text: text || '' });
-  if (e instanceof Anthropic.APIUserAbortError || e?.name === 'AbortError') return r('cancelled');
-  if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) return r('chave_invalida', e.message);
-  if (e instanceof Anthropic.RateLimitError) return r('rate_limited', e.message);
-  if (e instanceof Anthropic.BadRequestError) return r('requisicao', e.message);
-  if (e instanceof Anthropic.APIConnectionError) return r('sem_rede');
-  if (e instanceof Anthropic.APIError) return r('upstream_error', e.message);
-  return r('erro', String(e?.message || e));
-}
-// O catálogo de exercícios é fixo: vai no system com cache (bem mais barato a partir da 2ª chamada).
-const MARCA_CATALOGO = '\nCATÁLOGO DE EXERCÍCIOS';
-const MARCA_CONVERSA = '\n\nA seguir vem a conversa';
-function separarCatalogo(turnos) {
-  const msgs = turnos.map((t) => ({ role: t.role, content: t.content })); const c0 = String(msgs[0]?.content || '');
-  const i = c0.indexOf(MARCA_CATALOGO); if (i < 0) return { msgs, system: [] };
-  const f = c0.indexOf(MARCA_CONVERSA, i); const cat = c0.slice(i + 1, f > 0 ? f : undefined);
-  msgs[0] = { role: 'user', content: c0.slice(0, i) + (f > 0 ? c0.slice(f) : '') };
-  return { msgs, system: [{ type: 'text', text: cat, cache_control: { type: 'ephemeral' } }] };
-}
-// Mesmo contrato do sample do claude.ai: sample(turnos, { tools, onText, signal }) → { text, truncated }; erros { code, message, text }.
-function sampleApi() {
-  const fn = async (turnos, op = {}) => {
-    const chave = lerChave(); if (!chave) throw { code: 'sem_chave', message: '' };
-    if (navigator.onLine === false) throw { code: 'sem_rede', message: '' };
-    let Anthropic; try { Anthropic = await carregarSdk(); } catch (e) { throw { code: 'sem_rede', message: '' }; }
-    const m = modeloApi(); const client = new Anthropic({ apiKey: chave, dangerouslyAllowBrowser: true });
-    const { msgs, system } = separarCatalogo(turnos);
-    const ferr = op.tools || [];
-    const tools = ferr.map((f) => ({ name: f.name, description: f.description, input_schema: f.inputSchema || { type: 'object', properties: {} }, eager_input_streaming: true }));
-    let texto = '', truncated = false, custo = 0, falhasJson = 0;
-    try {
-      for (let volta = 0; volta < 8; volta++) {
-        const params = { model: m.id, max_tokens: 32000, thinking: { type: 'adaptive' }, output_config: { effort: 'medium' }, messages: msgs };
-        if (system.length) params.system = system;
-        if (tools.length) params.tools = tools;
-        if (m.fallback) { params.betas = ['server-side-fallback-2026-07-01']; params.fallbacks = 'default'; }
-        const base = texto ? texto + '\n\n' : ''; let parcial = '';
-        const stream = client.beta.messages.stream(params, { signal: op.signal });
-        stream.on('text', (d) => { parcial += d; op.onText?.({ text: base + parcial, delta: d }); });
-        let msg;
-        try { msg = await stream.finalMessage(); falhasJson = 0; }
-        catch (e) {
-          // entrada de ferramenta que não deu para ler: repete a volta (até 2 vezes); erros da API vão para o aluno
-          if (!(e instanceof Anthropic.APIError) && e?.name !== 'AbortError' && !op.signal?.aborted && falhasJson++ < 2) { volta--; continue; }
-          throw erroApi(e, Anthropic, base + parcial);
-        }
-        custo += custoUso(m, msg.usage || {});
-        if (parcial) texto = base + parcial;
-        if (msg.stop_reason === 'refusal') throw { code: 'refused', message: '', text: '' };
-        if (msg.stop_reason === 'pause_turn') { msgs.push({ role: 'assistant', content: msg.content }); continue; }
-        const usos = msg.content.filter((b) => b.type === 'tool_use');
-        // max_tokens no meio de uma ferramenta: a entrada pode estar cortada, então ela não roda
-        if (msg.stop_reason !== 'tool_use' || !usos.length) { truncated = msg.stop_reason === 'max_tokens'; break; }
-        msgs.push({ role: 'assistant', content: msg.content });
-        const res = [];
-        for (const u of usos) {
-          const f = ferr.find((x) => x.name === u.name);
-          const falta = f ? (f.inputSchema?.required || []).filter((k) => u.input?.[k] == null) : [];
-          if (!f || !u.input || typeof u.input !== 'object' || falta.length) { res.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: f ? 'Faltam campos obrigatórios: ' + falta.join(', ') : 'Ferramenta desconhecida' }); continue; }
-          try { const r = await f.execute(u.input); res.push({ type: 'tool_result', tool_use_id: u.id, content: typeof r === 'string' ? r : JSON.stringify(r ?? 'ok') }); }
-          catch (e) { res.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: String(e?.message || e) }); }
-        }
-        msgs.push({ role: 'user', content: res });
-      }
-    } finally { if (custo) somarGasto(custo); }
-    return { text: texto, truncated };
-  };
-  fn.limits = async () => ({ tools: true });
-  return fn;
-}
-
-// Tela do Coach no app instalado: chave, modelo e gasto do mês
-A.salvarChave = () => {
-  const v = String($('#chaveApi')?.value || '').trim();
-  if (!/^sk-ant-\S{10,}$/.test(v)) return toast('A chave começa com sk-ant- (copie inteira)');
-  try { localStorage.setItem(CHAVE_API, v); } catch (e) { return toast('Não consegui guardar a chave neste celular'); }
-  S.coachIndisponivel = false; UI.trocarChave = false; render(); toast('Chave salva só neste celular');
+function paraBase64(txt) { const b = new TextEncoder().encode(txt); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); }
+function deBase64(b64) { const s = atob(String(b64).replace(/\s+/g, '')); const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return new TextDecoder().decode(b); }
+const ERRO_NUVEM = {
+  token_invalido: 'O GitHub recusou o token. Crie outro e conecte de novo.',
+  sem_acesso: 'O token não tem acesso ao repositório ou o repositório não existe. Confira o nome e a permissão Contents (leitura e escrita).',
+  limite: 'O GitHub pediu uma pausa (limite de uso). O app tenta de novo depois.',
+  sem_rede: 'Sem internet: as mudanças ficam no celular e sobem quando conectar.',
+  conflito: 'Os dados mudaram no GitHub durante a gravação. O app tenta de novo na próxima sincronização.',
+  erro: 'A sincronização falhou. O app tenta de novo na próxima vez.'
 };
-A.trocarChave = () => { UI.trocarChave = true; render(); };
-A.irChave = () => { UI.trocarChave = true; A.tab({ dataset: { v: 'coach' } }); };
-A.removerChave = () => { try { localStorage.removeItem(CHAVE_API); } catch (e) {} UI.trocarChave = false; render(); toast('Chave removida deste celular'); };
-A.modeloApi = (el) => { S.config.modeloApi = el.dataset.v; gravar('config', null, S.config); render(); };
-function cardChave() {
-  return `<div class="card"><div class="h3">Ligue o Coach com a sua chave da API</div>
-    <ol class="small" style="margin:0;padding-left:20px;display:grid;gap:4px">
-      <li>Entre em <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> e crie sua conta.</li>
-      <li>Em <b>Billing</b>, coloque créditos. O uso é cobrado à parte da assinatura do Claude.</li>
-      <li>Em <b>API Keys</b>, crie uma chave e copie (começa com sk-ant-).</li>
-      <li>Cole aqui. Ela fica só neste celular e não vai para o backup.</li></ol>
-    <input id="chaveApi" class="input mono" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-..." aria-label="Chave da API da Anthropic">
-    <div class="btnrow"><button class="btn primary" data-a="salvarChave">Salvar chave</button>${lerChave() ? '<button class="btn" data-a="cancelarChave">Cancelar</button>' : ''}</div></div>`;
+const erroGh = (st) => ({ code: st === 401 ? 'token_invalido' : st === 403 || st === 429 ? 'limite' : st === 404 ? 'sem_acesso' : 'erro', status: st });
+async function ghPedir(cfg, metodo, caminho, corpo) {
+  try {
+    return await fetch(`https://api.github.com/repos/${cfg.repo}/${caminho}`, { method: metodo, cache: 'no-store',
+      headers: { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(corpo ? { 'Content-Type': 'application/json' } : {}) },
+      body: corpo ? JSON.stringify(corpo) : undefined });
+  } catch (e) { throw { code: 'sem_rede' }; }
 }
-A.cancelarChave = () => { UI.trocarChave = false; render(); };
-function topoCoachInstalado() {
-  if (!lerChave() || UI.trocarChave) return cardChave();
-  return navigator.onLine === false ? '<div class="callout warn small">Sem internet agora. O Coach volta quando você se conectar; o resto do app funciona normalmente.</div>' : '';
+async function lerArquivoNuvem(cfg) {
+  const r = await ghPedir(cfg, 'GET', 'contents/' + ARQ_NUVEM);
+  if (r.status === 404) return { sha: null, dados: null };
+  if (!r.ok) throw erroGh(r.status);
+  const j = await r.json(); let b64 = j.content;
+  if (!b64 && j.sha) { const rb = await ghPedir(cfg, 'GET', 'git/blobs/' + j.sha); if (!rb.ok) throw erroGh(rb.status); b64 = (await rb.json()).content; } // arquivo acima de 1 MB
+  const o = JSON.parse(deBase64(b64 || ''));
+  return { sha: j.sha, dados: o?.dados || null };
 }
-function rodapeCoachInstalado() {
-  const g = S.config.gastoApi?.mes === chaveData(Date.now()).slice(0, 7) ? S.config.gastoApi : null; const m = modeloApi();
-  return `<div class="chips">${MODELOS_API.map((x) => `<button class="chip sm ${x.id === m.id ? 'on' : ''}" data-a="modeloApi" data-v="${x.id}">${x.nome}</button>`).join('')}</div>
-    <div class="row between"><span class="faint" style="font-size:12.5px">${m.nome}, ${m.nota} · este mês: ${g ? `${fmtUsd(g.usd)} em ${g.msgs} resposta${g.msgs === 1 ? '' : 's'}` : 'US$ 0,00'} (estimativa)</span>${lerChave() ? '<button class="linkish" data-a="trocarChave">Trocar chave</button>' : ''}</div>`;
+let nuvemRodando = null, nuvemDeNovo = false, tNuvem = null;
+function agendarNuvem() { if (!INSTALADO || !lerNuvemCfg()) return; clearTimeout(tNuvem); tNuvem = setTimeout(() => sincronizar(), 8000); }
+async function sincronizar() {
+  const cfg = lerNuvemCfg(); if (!INSTALADO || !cfg) return null;
+  if (navigator.onLine === false) { S.nuvem = { ...S.nuvem, estado: 'sem-rede' }; agendarRender(); return null; }
+  if (nuvemRodando) { nuvemDeNovo = true; return nuvemRodando; }
+  clearTimeout(tNuvem);
+  S.nuvem = { ...S.nuvem, estado: 'sincronizando' };
+  nuvemRodando = (async () => {
+    for (let tentativa = 0; tentativa < 3; tentativa++) {
+      const { sha, dados: remoto } = await lerArquivoNuvem(cfg);
+      const junto = juntarDados(dadosLocais(), remoto || {});
+      const n = aplicarNoAparelho(junto);
+      if (remoto && estavel(junto) === estavel(juntarDados(remoto, {}))) return n;
+      const corpo = { message: 'Sincronização do app', content: paraBase64(JSON.stringify({ app: 'ficha-coach', versao: 2, atualizadoEm: Date.now(), dados: junto })) };
+      if (sha) corpo.sha = sha;
+      const r = await ghPedir(cfg, 'PUT', 'contents/' + ARQ_NUVEM, corpo);
+      if (r.ok) return n;
+      if (r.status === 409 || r.status === 422) continue; // alguém gravou no meio: lê de novo e junta
+      throw erroGh(r.status);
+    }
+    throw { code: 'conflito' };
+  })();
+  try {
+    const n = await nuvemRodando; S.nuvem = { estado: 'ok', em: Date.now() };
+    if (n) { render.forcar = true; agendarRender(); }
+    return { ok: true, n };
+  } catch (e) {
+    S.nuvem = { estado: e?.code === 'sem_rede' ? 'sem-rede' : 'erro', code: e?.code || 'erro', em: Date.now() };
+    return { ok: false, code: e?.code || 'erro' };
+  } finally {
+    nuvemRodando = null; agendarRender();
+    if (nuvemDeNovo) { nuvemDeNovo = false; agendarNuvem(); }
+  }
 }
-
-// ───────── No app do claude.ai: levar os dados para o app instalado ─────────
-A.levarDados = async () => {
-  const txt = textoBackup(); let ok = false;
-  try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) { ok = false; }
-  if (ok) { marcarBackup(); toast('Dados copiados. No app instalado: Você › Ajustes e dados › Restaurar backup › colar.'); }
-  else { UI.backupTxt = txt; abrirSheet(sheetBackupTexto); }
+A.abrirNuvem = () => { UI.nuvem = { repo: lerNuvemCfg()?.repo || REPO_PADRAO }; abrirSheet(sheetNuvem); };
+const sheetNuvem = () => `${shead('Sincronizar com o GitHub', 'Seus dados')}
+  <p class="small muted">O app guarda uma cópia dos seus dados num repositório privado seu no GitHub. Assim eles não se perdem se o celular for trocado, e o Claude consegue mudar seus treinos quando você pedir. Só você vê.</p>
+  <ol class="small" style="margin:0;padding-left:20px;display:grid;gap:4px">
+    <li>No GitHub, abra <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Settings › Developer settings › Fine-grained tokens › Generate new token</a>.</li>
+    <li>Dê um nome (ex.: Ficha Coach) e a validade mais longa disponível.</li>
+    <li>Em <b>Repository access</b>, escolha <b>Only select repositories</b> e marque <b>ficha-coach-dados</b>.</li>
+    <li>Em <b>Permissions › Contents</b>, escolha <b>Read and write</b>. Gere e copie o token (começa com github_pat_).</li>
+    <li>Cole aqui. Ele fica só neste celular e não entra no backup.</li></ol>
+  <div class="field"><label for="ghToken">Token</label><input id="ghToken" class="input mono" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_..."></div>
+  <div class="field"><label for="ghRepo">Repositório</label><input id="ghRepo" class="input mono" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(UI.nuvem?.repo || REPO_PADRAO)}"></div>
+  ${UI.nuvem?.erro ? `<div class="callout bad small">${esc(UI.nuvem.erro)}</div>` : ''}
+  <button class="btn primary big block" data-a="conectarNuvem" ${UI.nuvem?.testando ? 'disabled' : ''}>${UI.nuvem?.testando ? 'Conectando…' : 'Conectar e sincronizar'}</button>`;
+A.conectarNuvem = async () => {
+  const token = String($('#ghToken')?.value || '').trim(); const repo = String($('#ghRepo')?.value || '').trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '');
+  if (!/^(github_pat_|ghp_)\S{20,}$/.test(token)) { UI.nuvem = { ...UI.nuvem, repo, erro: 'Cole o token inteiro (começa com github_pat_).' }; return renderSheet(); }
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { UI.nuvem = { ...UI.nuvem, repo, erro: 'Repositório no formato dono/nome.' }; return renderSheet(); }
+  const antes = localStorage.getItem(CHAVE_NUVEM);
+  try { localStorage.setItem(CHAVE_NUVEM, JSON.stringify({ token, repo })); } catch (e) { UI.nuvem = { ...UI.nuvem, erro: 'Não consegui guardar o token neste celular.' }; return renderSheet(); }
+  UI.nuvem = { repo, testando: true }; renderSheet();
+  const r = await sincronizar();
+  if (r?.ok) { fecharSheet(); render.forcar = true; render(); toast(r.n ? `Conectado: ${r.n} itens sincronizados` : 'Conectado e sincronizado'); return; }
+  try { if (antes) localStorage.setItem(CHAVE_NUVEM, antes); else localStorage.removeItem(CHAVE_NUVEM); } catch (e) {}
+  UI.nuvem = { repo, erro: ERRO_NUVEM[r?.code] || ERRO_NUVEM.erro }; renderSheet();
 };
-function blocoLevarDados() {
-  if (INSTALADO) return '';
-  return `<div class="stack" style="gap:6px"><b class="small">App que funciona sem internet</b>
-    <p class="small muted">Abra <a href="${URL_APP}" target="_blank" rel="noopener">${URL_APP.replace('https://', '')}</a> no Safari do iPhone, toque em Compartilhar › Adicionar à Tela de Início e use pelo ícone. Para levar seus dados, copie aqui e cole lá em Restaurar backup.</p>
-    <button class="btn sm" data-a="levarDados">Copiar meus dados para o app instalado</button></div>`;
+A.sincronizarAgora = async () => { const r = await sincronizar(); toast(r?.ok ? 'Sincronizado' : ERRO_NUVEM[r?.code || 'erro']); render(); };
+A.desconectarNuvem = () => { try { localStorage.removeItem(CHAVE_NUVEM); } catch (e) {} S.nuvem = null; render(); toast('Desconectado. Os dados continuam neste celular.'); };
+function blocoNuvem(onde) {
+  if (!INSTALADO) return onde === 'ajustes' ? `<p class="small muted">O app principal agora é o instalado: <a href="${URL_APP}" target="_blank" rel="noopener">${URL_APP.replace('https://', '')}</a>.</p>` : '';
+  const cfg = lerNuvemCfg(); const n = S.nuvem || {};
+  if (onde === 'hoje') return cfg && n.estado === 'erro' && !S.sessao ? `<div class="callout warn row between"><span class="small">${esc(ERRO_NUVEM[n.code] || ERRO_NUVEM.erro)}</span><button class="btn sm" data-a="abrirNuvem">Ver</button></div>` : '';
+  if (!cfg) return `<div class="stack" style="gap:6px"><b class="small">Sincronização</b><p class="small muted">Desligada: os dados estão só neste celular. Conecte ao seu GitHub para ter cópia segura e para o Claude poder mudar seus treinos.</p><button class="btn sm" data-a="abrirNuvem">Conectar ao GitHub</button></div>`;
+  const quando = n.em ? new Date(n.em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
+  const estado = { sincronizando: 'sincronizando…', ok: `sincronizado às ${quando}`, 'sem-rede': 'sem internet: sobe quando conectar', erro: ERRO_NUVEM[n.code] || ERRO_NUVEM.erro }[n.estado] || 'aguardando';
+  return `<div class="stack" style="gap:6px"><b class="small">Sincronização com ${esc(cfg.repo)}</b><p class="small ${n.estado === 'erro' ? '' : 'muted'}">${esc(estado)}</p>
+    <div class="btnrow"><button class="btn sm" data-a="sincronizarAgora">Sincronizar agora</button><button class="btn sm" data-a="abrirNuvem">Trocar token</button><button class="btn sm" data-a="desconectarNuvem">Desconectar</button></div></div>`;
 }
 
 // ───────── Coach (Claude) ─────────
 let samplePromise = null;
 async function getSample() {
-  if (INSTALADO) return lerChave() ? sampleApi() : null; // app instalado: API da Anthropic com a chave do aluno
   if (!samplePromise) samplePromise = (window.claude?.use ? window.claude.use('sample') : Promise.resolve(null)).catch(() => null);
   const s = await samplePromise; if (!s) samplePromise = null; // não guarda a falha: tenta de novo na próxima mensagem
   return s;
@@ -4766,13 +4800,8 @@ const ERRO_COACH = {
   refused: 'O Coach não conseguiu responder a esse pedido. Tente reformular.',
   prompt_too_large: 'A conversa ficou longa demais. Comece uma conversa nova.',
   empty_completion: 'O Coach não gerou resposta. Tente reformular de forma mais curta.',
-  upstream_error: 'A conexão falhou no meio da resposta. Toque em enviar de novo.',
-  sem_chave: 'Para usar o Coach, cole sua chave da API no topo desta tela.',
-  sem_rede: 'Sem internet agora. O Coach volta quando você se conectar; o resto do app funciona normalmente.',
-  chave_invalida: 'A Anthropic recusou a chave. Confira se copiou inteira ou crie outra em console.anthropic.com e toque em Trocar chave.',
-  requisicao: 'A Anthropic recusou o pedido. Se for falta de crédito, coloque créditos em console.anthropic.com (Billing).'
+  upstream_error: 'A conexão falhou no meio da resposta. Toque em enviar de novo.'
 };
-const SEM_CODIGO = ['sem_chave', 'sem_rede', 'chave_invalida'];
 const SEM_ACESSO = ['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'];
 
 function inlineMd(s) {
@@ -5035,7 +5064,7 @@ async function enviar(txtArg, repetir = false) {
     if (UI.tab === 'coach') { render.forcar = true; render(); rolarChat(); } else toast(msg.repetir ? 'O Coach não conseguiu responder' : 'O Coach respondeu');
   };
   const sample = await getSample();
-  if (!sample) { S.coachIndisponivel = true; return fim({ r: 'a', t: '', ts: Date.now(), props: [], aviso: INSTALADO ? ERRO_COACH.sem_chave : AVISO_SEM_CLAUDE, repetir: true }); }
+  if (!sample) { S.coachIndisponivel = true; return fim({ r: 'a', t: '', ts: Date.now(), props: [], aviso: AVISO_SEM_CLAUDE, repetir: true }); }
   S.coachIndisponivel = false;
   // vigia: sem nenhuma palavra em 2 minutos, desiste e oferece tentar de novo (antes, o chat ficava travado "pensando")
   const vigia = setInterval(() => { if (!G.ctl) return clearInterval(vigia); if (!G.texto && Date.now() - G.inicio > 120000) { G.esgotou = true; G.ctl.abort(); } else atualizarBolha(); }, 5000);
@@ -5061,7 +5090,6 @@ async function enviar(txtArg, repetir = false) {
     if (e?.code === 'cancelled' || e?.name === 'AbortError') aviso = G.esgotou ? 'O Claude não respondeu em 2 minutos. Se apareceu um pedido de permissão, toque em Permitir; depois, toque em Tentar de novo.' : 'Resposta interrompida.';
     else if (SEM_ACESSO.includes(e?.code)) { S.coachIndisponivel = true; aviso = ERRO_COACH[e.code] || AVISO_SEM_CLAUDE; }
     else if (e?.code === 'refused') { resp = ''; aviso = ERRO_COACH.refused; }
-    else if (SEM_CODIGO.includes(e?.code)) aviso = ERRO_COACH[e.code];
     else aviso = (ERRO_COACH[e?.code] || 'Não consegui falar com o Coach. Toque em Tentar de novo.') + ` [${e?.code || 'erro'}${e?.message ? ': ' + String(e.message).slice(0, 300) : ''}]`;
   } finally { clearInterval(vigia); }
   const { limpo, props, avisos } = extrairBlocos(resp);
@@ -5080,7 +5108,7 @@ const rolarChat = () => requestAnimationFrame(() => { const a = document.getElem
 function atualizarBolha() { const b = $('#genBubble'); if (b) { b.innerHTML = bolhaGerando(); } }
 function bolhaGerando() {
   const espera = G.inicio ? Math.round((Date.now() - G.inicio) / 1000) : 0;
-  return (G.texto ? `<div class="md">${md(G.texto)}</div>` : `<span class="thinking"><i></i><i></i><i></i> ${G.props.length ? 'Montando a explicação…' : 'Pensando…'}</span>${espera >= 20 && !G.props.length ? `<p class="faint small" style="margin-top:6px">Esperando o Claude há ${espera} s.${INSTALADO ? '' : ' Se apareceu um pedido de permissão do Claude, toque em Permitir.'}</p>` : ''}`) + G.props.map((p) => cardProposta(p)).join('');
+  return (G.texto ? `<div class="md">${md(G.texto)}</div>` : `<span class="thinking"><i></i><i></i><i></i> ${G.props.length ? 'Montando a explicação…' : 'Pensando…'}</span>${espera >= 20 && !G.props.length ? `<p class="faint small" style="margin-top:6px">Esperando o Claude há ${espera} s. Se apareceu um pedido de permissão do Claude, toque em Permitir.</p>` : ''}`) + G.props.map((p) => cardProposta(p)).join('');
 }
 function cardProposta(p, c, m, k) {
   const dias = DIAS.filter((d) => p.dias[d]);
@@ -5115,8 +5143,7 @@ VIEWS.coach = () => {
   const conv = S.conversas[UI.convId];
   const nome = primeiroNome();
   let b = '';
-  if (INSTALADO) b += topoCoachInstalado();
-  else if (S.coachIndisponivel) b += `<div class="callout warn">O Coach usa o Claude da sua conta e só funciona com o app aberto pelo link do claude.ai, com você conectado e o uso do Claude permitido para este app.</div>`;
+  if (S.coachIndisponivel) b += `<div class="callout warn">O Coach usa o Claude da sua conta e só funciona com o app aberto pelo link do claude.ai, com você conectado e o uso do Claude permitido para este app.</div>`;
   b += '<div class="chat">';
   if (!conv?.msgs?.length) {
     b += `<div class="msg a"><div class="md"><p>${nome ? `Oi, ${esc(nome)}!` : 'Oi!'} Sou seu coach. Monto suas playlists de treino, ajusto o plano quando um aparelho está ocupado ou algo incomoda, e acompanho sua evolução pelos treinos que você registra.</p><p>Para começar, me conte seu objetivo, há quanto tempo treina e quantos dias por semana consegue ir à academia.</p></div></div>
@@ -5137,8 +5164,7 @@ VIEWS.coach = () => {
   if (G.ctl && G.convId === UI.convId) b += `<div class="msg a" id="genBubble">${bolhaGerando()}</div>`;
   b += '</div>';
   b += `<div class="composer"><textarea id="coachIn" class="input" rows="1" data-in="coachIn" placeholder="Escreva para o Coach" aria-label="Mensagem para o Coach">${esc(UI.prefill || '')}</textarea>${G.ctl ? `<button class="send stop" data-a="pararCoach" aria-label="Parar">${ICON.stop}</button>` : `<button class="send" data-a="enviarCoach" aria-label="Enviar">${ICON.send}</button>`}</div>`;
-  if (INSTALADO) b += rodapeCoachInstalado();
-  else b += `<div class="row between"><div class="chips"><button class="chip sm ${S.config.modoCoach !== 'complex' ? 'on' : ''}" data-a="modoCoach" data-v="default">Rápido</button><button class="chip sm ${S.config.modoCoach === 'complex' ? 'on' : ''}" data-a="modoCoach" data-v="complex">Mais detalhado</button></div><span class="faint" style="font-size:12.5px">Usa o Claude da sua conta</span></div>`;
+  b += `<div class="row between"><div class="chips"><button class="chip sm ${S.config.modoCoach !== 'complex' ? 'on' : ''}" data-a="modoCoach" data-v="default">Rápido</button><button class="chip sm ${S.config.modoCoach === 'complex' ? 'on' : ''}" data-a="modoCoach" data-v="complex">Mais detalhado</button></div><span class="faint" style="font-size:12.5px">Usa o Claude da sua conta</span></div>`;
   return {
     top: topo('Personal trainer com IA', 'Coach', `<button class="iconbtn" data-a="listaConversas" aria-label="Conversas">${ICON.list}</button><button class="iconbtn" data-a="novaConversa" aria-label="Nova conversa">${ICON.plus}</button>`),
     body: b,
